@@ -207,10 +207,11 @@ def make_hand_cube_inhand_rotate_env_cfg() -> ManagerBasedRlEnvCfg:
         # Smooth finite-difference yaw over recent steps for robustness.
         "history_steps": 4,
         # Multiplicative drift gate on non-yaw motion from reset pose.
-        # If position drift > 2 cm or roll/pitch tilt drift > threshold,
+        # If position drift > 1 cm or roll/pitch tilt drift > threshold,
         # reduce this reward to 10% (step mode).
-        "drift_position_threshold": 0.02,
-        "drift_tilt_threshold": 0.35,
+        # MOD 2: tightened from 0.02 m / 0.35 rad (baseline) to 0.01 m / 0.20 rad.
+        "drift_position_threshold": 0.01,
+        "drift_tilt_threshold": 0.20,
         "drift_mode": "step",
         "drift_inside_factor": 1.0,
         "drift_outside_factor": 0.1,
