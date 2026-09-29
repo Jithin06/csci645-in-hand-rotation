@@ -20,9 +20,19 @@ Per-episode metrics:
   episode_len_s       episode duration in seconds
   rotation_rad        net cube yaw rotated in the task direction (radians)
   yaw_rate_rad_s      rotation_rad / time the rotation was measured over
-  rotation_progress   mean of the training metric (yaw speed x pose stability, 0-1)
-  position_error_cm   mean cube position drift from its reset pose
-  tilt_error_rad      mean cube roll/pitch drift from its reset pose
+  rotation_progress   mean per-step (yaw speed x pose stability), 0-1; same formula as
+                      the training metric but anchored to this episode's true start pose
+  position_error_cm   mean cube position drift from this episode's start pose
+  tilt_error_rad      mean cube roll/pitch drift from this episode's start pose
+  *_logged            the same three quantities as the training code's metric terms
+                      compute them (these match the W&B Episode_Metrics curves)
+  anchor_gap_cm       distance between the training metric's reset anchor and the
+                      cube's true start pose (diagnostic; 0 if the anchor is fresh)
+
+Why two versions: the metric terms record their reference pose inside the env's
+reset, before MuJoCo recomputes body positions, so the reference is the cube pose
+from *before* the reset. This script re-anchors after the reset so drift is
+measured from where each episode actually starts, and reports both.
   fingertip_contact   mean fraction of fingertips touching the cube
   torque_l2           mean sum of squared actuator torques (Nm^2)
   mech_power_w        mean sum |torque * joint velocity| (W)
@@ -62,6 +72,10 @@ PER_EPISODE_METRICS = [
   "rotation_progress",
   "position_error_cm",
   "tilt_error_rad",
+  "rotation_progress_logged",
+  "position_error_logged_cm",
+  "tilt_error_logged_rad",
+  "anchor_gap_cm",
   "fingertip_contact",
   "torque_l2",
   "mech_power_w",
@@ -81,6 +95,10 @@ def parse_args() -> argparse.Namespace:
                  help="actor history length; default: inferred from the checkpoint")
   p.add_argument("--out-dir", type=Path, default=Path("eval_results"))
   p.add_argument("--device", default=None)
+  p.add_argument("--stochastic", action="store_true",
+                 help="diagnostic: sample actions like training instead of using the mean")
+  p.add_argument("--obs-noise", action="store_true",
+                 help="diagnostic: keep training observation noise on")
   return p.parse_args()
 
 
@@ -92,7 +110,8 @@ def actor_input_dim(ckpt_path: Path) -> int:
   raise RuntimeError(f"Could not find the actor's first layer in {ckpt_path}")
 
 
-def build(task: str, cond: str, num_envs: int, history: int, seed: int, device: str):
+def build(task: str, cond: str, num_envs: int, history: int, seed: int, device: str,
+          obs_noise: bool = False):
   from mjlab.envs import ManagerBasedRlEnv
   from mjlab.rl import RslRlVecEnvWrapper
   from mjlab.tasks.registry import load_env_cfg
@@ -101,7 +120,7 @@ def build(task: str, cond: str, num_envs: int, history: int, seed: int, device: 
   cfg.seed = seed
   cfg.scene.num_envs = num_envs
   cfg.observations["actor"].history_length = history
-  cfg.observations["actor"].enable_corruption = False
+  cfg.observations["actor"].enable_corruption = obs_noise
   cfg.curriculum = {}
   for event_name, overrides in CONDITIONS[cond].items():
     cfg.events[event_name].params.update(copy.deepcopy(overrides))
@@ -114,8 +133,15 @@ def cube_yaw(u) -> torch.Tensor:
   return euler_xyz_from_quat(u.scene["cube"].data.root_link_quat_w)[2]
 
 
+def cube_pose(u):
+  from mjlab.utils.lab_api.math import euler_xyz_from_quat
+  d = u.scene["cube"].data
+  roll, pitch, yaw = euler_xyz_from_quat(d.root_link_quat_w)
+  return d.root_link_pos_w.clone(), roll.clone(), pitch.clone(), yaw.clone()
+
+
 @torch.no_grad()
-def rollout(wrapper, policy) -> dict[str, np.ndarray]:
+def rollout(wrapper, policy, stochastic: bool = False) -> dict[str, np.ndarray]:
   from mjlab.utils.lab_api.math import wrap_to_pi
 
   u = wrapper.unwrapped
@@ -136,11 +162,21 @@ def rollout(wrapper, policy) -> dict[str, np.ndarray]:
   rot = torch.zeros(n, device=dev)
   torque = torch.zeros(n, device=dev)
   power = torch.zeros(n, device=dev)
-  prev_yaw = cube_yaw(u).clone()
+  # reset() ends with a forward pass, so this is each episode's true start pose.
+  pos0, roll0, pitch0, prev_yaw = cube_pose(u)
+  pos_err = torch.zeros(n, device=dev)
+  tilt_err = torch.zeros(n, device=dev)
+  progress = torch.zeros(n, device=dev)
+  anchor_gap = torch.zeros(n, device=dev)
+  for i, name in enumerate(metric_names):
+    fn = mm._term_cfgs[i].func
+    if name == "position_error" and hasattr(fn, "_init_pos_w"):
+      anchor_gap = torch.linalg.vector_norm(fn._init_pos_w - pos0, dim=-1) * 100.0
   robot = u.scene["robot"]
 
   for _ in range(max_len + 5):
-    obs, _, dones, _ = wrapper.step(policy(obs))
+    act = policy(obs, stochastic_output=True) if stochastic else policy(obs)
+    obs, _, dones, _ = wrapper.step(act)
     done = dones.bool()
     a = alive.float()
     # Metrics and terminations are computed before auto-reset, so they are valid
@@ -151,9 +187,18 @@ def rollout(wrapper, policy) -> dict[str, np.ndarray]:
     # finished, so those envs skip this step's state-based quantities.
     valid = alive & ~done
     v = valid.float()
-    yaw = cube_yaw(u)
+    pos, roll, pitch, yaw = cube_pose(u)
     rot += -wrap_to_pi(yaw - prev_yaw) * v  # left hand: clockwise is the task direction
-    prev_yaw = yaw.clone()
+    prev_yaw = yaw
+    pe = torch.linalg.vector_norm(pos - pos0, dim=-1)
+    te = torch.linalg.vector_norm(
+      torch.stack([wrap_to_pi(roll - roll0).abs(), wrap_to_pi(pitch - pitch0).abs()], -1), dim=-1)
+    yaw_rate = -u.scene["cube"].data.root_link_ang_vel_w[:, 2]
+    prog = ((yaw_rate / 0.20).clamp(0, 1) * (1 - pe / 0.02).clamp(0, 1)
+            * (1 - te / 0.35).clamp(0, 1))
+    pos_err += pe * v
+    tilt_err += te * v
+    progress += torch.nan_to_num(prog) * v
     tau, qd = robot.data.actuator_force, robot.data.joint_vel
     torque += (tau ** 2).sum(-1) * v
     if tau.shape == qd.shape:
@@ -175,12 +220,16 @@ def rollout(wrapper, policy) -> dict[str, np.ndarray]:
     "torque_l2": torque / vs,
     "mech_power_w": power / vs,
     "work_j": power * dt,  # total |mechanical work| over the episode
+    "rotation_progress": progress / vs,
+    "position_error_cm": pos_err / vs * 100.0,
+    "tilt_error_rad": tilt_err / vs,
+    "anchor_gap_cm": anchor_gap,
   }
   st = steps.clamp(min=1)
   lookup = {
-    "rotation_progress": "rotation_progress",
-    "position_error": "position_error_cm",
-    "tilt_error": "tilt_error_rad",
+    "rotation_progress": "rotation_progress_logged",
+    "position_error": "position_error_logged_cm",
+    "tilt_error": "tilt_error_logged_rad",
     "fingertip_contact_fraction": "fingertip_contact",
   }
   for i, name in enumerate(metric_names):
@@ -237,13 +286,14 @@ def main() -> None:
   results = {
     "label": args.label, "checkpoint": str(ckpt), "task": args.task,
     "history_length": history, "num_envs": args.num_envs, "seeds": args.seeds,
-    "policy": "deterministic (action mean)", "obs_noise": False,
+    "policy": "stochastic (sampled)" if args.stochastic else "deterministic (action mean)",
+    "obs_noise": args.obs_noise,
     "conditions": {c: CONDITIONS[c] for c in args.conditions}, "summary": {},
   }
 
   for cond in args.conditions:
     t0 = time.time()
-    env = build(args.task, cond, args.num_envs, history, args.seeds[0], device)
+    env = build(args.task, cond, args.num_envs, history, args.seeds[0], device, args.obs_noise)
     got = env.observation_manager.group_obs_dim["actor"]
     got = int(got[0]) if isinstance(got, tuple) else None
     if got != in_dim:
@@ -263,9 +313,12 @@ def main() -> None:
     for seed in args.seeds:
       env.seed(seed)
       torch.manual_seed(seed)
-      per_seed.append(rollout(wrapper, policy))
+      per_seed.append(rollout(wrapper, policy, args.stochastic))
       print(f"[EVAL] {cond} seed={seed}: survived={per_seed[-1]['survived'].mean():.3f} "
-            f"rotation={per_seed[-1]['rotation_rad'].mean():.2f} rad")
+            f"rotation={per_seed[-1]['rotation_rad'].mean():.2f} rad "
+            f"progress={per_seed[-1]['rotation_progress'].mean():.3f} "
+            f"(logged {per_seed[-1]['rotation_progress_logged'].mean():.3f}) "
+            f"anchor_gap={per_seed[-1]['anchor_gap_cm'].mean():.2f} cm")
     eps = {k: np.concatenate([d[k] for d in per_seed]) for k in per_seed[0]}
     with open(out_dir / f"episodes_{cond}.csv", "w", newline="") as f:
       w = csv.writer(f)
