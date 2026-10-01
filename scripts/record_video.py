@@ -41,6 +41,8 @@ def main() -> None:
   p.add_argument("--height", type=int, default=720)
   p.add_argument("--out-dir", type=Path, default=Path("videos"))
   p.add_argument("--history-length", type=int, default=None)
+  p.add_argument("--distance", type=float, default=None,
+                 help="camera distance from the palm in m (task default 0.45; smaller = closer)")
   args = p.parse_args()
 
   import copy
@@ -73,6 +75,8 @@ def main() -> None:
   cfg.observations["actor"].enable_corruption = False
   cfg.curriculum = {}
   cfg.viewer.width, cfg.viewer.height = args.width, args.height
+  if args.distance is not None:
+    cfg.viewer.distance = args.distance
   for event_name, overrides in CONDITIONS[args.condition].items():
     cfg.events[event_name].params.update(copy.deepcopy(overrides))
 
