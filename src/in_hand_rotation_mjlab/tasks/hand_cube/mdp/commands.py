@@ -53,8 +53,8 @@ class InHandYawCommand(CommandTerm):
     )
     self.target_yaw[env_ids] = wrap_to_pi(current_yaw + delta_yaw)
 
-  def _update_command(self) -> None:
-    pass
+  def _update_command(self, env_ids: torch.Tensor | None = None) -> None:
+    del env_ids
 
 
 class InHandRotationDirectionCommand(CommandTerm):
@@ -93,11 +93,20 @@ class InHandRotationDirectionCommand(CommandTerm):
     self.prev_yaw[env_ids] = self._cube_yaw()[env_ids]
     self.cumulative_rotation[env_ids] = 0.0
 
-  def _update_command(self) -> None:
+  def _update_command(self, env_ids: torch.Tensor | None = None) -> None:
+    # mjlab >= 1.6 passes env_ids: None on the per-step update, the reset env
+    # ids when called from reset(). Scope the yaw accumulation accordingly so a
+    # partial reset does not advance the other environments' rotation state.
     current_yaw = self._cube_yaw()
-    self.step_delta_yaw = wrap_to_pi(current_yaw - self.prev_yaw)
-    self.cumulative_rotation += self.step_delta_yaw
-    self.prev_yaw = current_yaw.clone()
+    if env_ids is None:
+      self.step_delta_yaw = wrap_to_pi(current_yaw - self.prev_yaw)
+      self.cumulative_rotation += self.step_delta_yaw
+      self.prev_yaw = current_yaw.clone()
+      return
+    delta = wrap_to_pi(current_yaw[env_ids] - self.prev_yaw[env_ids])
+    self.step_delta_yaw[env_ids] = delta
+    self.cumulative_rotation[env_ids] += delta
+    self.prev_yaw[env_ids] = current_yaw[env_ids]
 
 
 class HandCubeFrameVizCommand(CommandTerm):
@@ -148,8 +157,8 @@ class HandCubeFrameVizCommand(CommandTerm):
   def _resample_command(self, env_ids: torch.Tensor) -> None:
     del env_ids
 
-  def _update_command(self) -> None:
-    pass
+  def _update_command(self, env_ids: torch.Tensor | None = None) -> None:
+    del env_ids
 
   def _debug_vis_impl(self, visualizer: "DebugVisualizer") -> None:
     env_indices = visualizer.get_env_indices(self.num_envs)

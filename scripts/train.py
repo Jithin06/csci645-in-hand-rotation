@@ -52,6 +52,13 @@ def _prepare_agent_cfg(agent_cfg: RslRlOnPolicyRunnerCfg) -> dict:
     if isinstance(model_cfg, dict):
       if model_cfg.get("class_name", "MLPModel") != "CNNModel":
         model_cfg.pop("cnn_cfg", None)
+      # rsl-rl 5 (mjlab >= 1.3): drop None-valued optional fields so MLPModel
+      # does not receive them (mirrors mjlab's MjlabOnPolicyRunner).
+      if model_cfg.get("distribution_cfg") is None:
+        model_cfg.pop("distribution_cfg", None)
+      if model_cfg.get("rnn_type") is None:
+        for opt in ("rnn_type", "rnn_hidden_dim", "rnn_num_layers"):
+          model_cfg.pop(opt, None)
   return cfg_dict
 
 
@@ -177,6 +184,12 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   if is_tracking_task:
     runner_kwargs["registry_name"] = registry_name
 
+  # Write config files before runner creation: rsl-rl 5 mutates agent_cfg
+  # in-place (mjlab 1.6 ordering). Only rank 0 writes, to avoid races.
+  if rank == 0:
+    dump_yaml(log_dir / "params" / "env.yaml", env_cfg)
+    dump_yaml(log_dir / "params" / "agent.yaml", agent_cfg)
+
   runner = runner_cls(env, agent_cfg, str(log_dir), device, **runner_kwargs)
 
   add_wandb_tags(cfg.agent.wandb_tags)
@@ -184,11 +197,6 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   if resume_path is not None:
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     runner.load(str(resume_path))
-
-  # Only write config files from rank 0 to avoid race conditions.
-  if rank == 0:
-    dump_yaml(log_dir / "params" / "env.yaml", env_cfg)
-    dump_yaml(log_dir / "params" / "agent.yaml", agent_cfg)
 
   runner.learn(
     num_learning_iterations=cfg.agent.max_iterations, init_at_random_ep_len=True

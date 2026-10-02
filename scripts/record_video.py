@@ -87,6 +87,13 @@ def main() -> None:
   for key in ("actor", "critic"):
     if isinstance(cfg_dict.get(key), dict) and cfg_dict[key].get("class_name", "MLPModel") != "CNNModel":
       cfg_dict[key].pop("cnn_cfg", None)
+    # rsl-rl 5 (mjlab >= 1.3): drop None-valued optional model fields.
+    if isinstance(cfg_dict.get(key), dict):
+      if cfg_dict[key].get("distribution_cfg") is None:
+        cfg_dict[key].pop("distribution_cfg", None)
+      if cfg_dict[key].get("rnn_type") is None:
+        for opt in ("rnn_type", "rnn_hidden_dim", "rnn_num_layers"):
+          cfg_dict[key].pop(opt, None)
   runner = (load_runner_cls(TASK_DEFAULT) or OnPolicyRunner)(wrapper, cfg_dict, device=device)
   runner.load(str(ckpt), map_location=device)
   policy = runner.get_inference_policy(device=device)

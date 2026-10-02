@@ -11,15 +11,18 @@ def leap_right_hand_cube_rotate_ppo_cfg() -> RslRlOnPolicyRunnerCfg:
       hidden_dims=(512, 512, 256),
       activation="elu",
       obs_normalization=True,
-      stochastic=True,
-      init_noise_std=0.7,
+      # mjlab >= 1.3 / rsl-rl 5: stochasticity is set via distribution_cfg.
+      distribution_cfg={
+        "class_name": "GaussianDistribution",
+        "init_std": 0.7,
+        "std_type": "scalar",
+      },
     ),
     critic=RslRlModelCfg(
       hidden_dims=(512, 512, 256),
       activation="elu",
       obs_normalization=True,
-      stochastic=False,
-      init_noise_std=0.7,
+      distribution_cfg=None,  # deterministic critic
     ),
     algorithm=RslRlPpoAlgorithmCfg(
       value_loss_coef=1.0,

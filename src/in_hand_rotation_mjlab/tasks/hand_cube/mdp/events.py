@@ -446,7 +446,6 @@ def set_actuator_effort_limits(
 ) -> None:
   """Set actuator effort limits and enable force limiting in MuJoCo."""
   from mjlab.actuator import IdealPdActuator
-  from mjlab.actuator.delayed_actuator import DelayedActuator
 
   env_ids = _resolve_env_ids(env, env_ids)
   if len(env_ids) == 0:
@@ -541,9 +540,7 @@ def set_actuator_effort_limits(
 
   ctrl_index = {int(cid.item()): i for i, cid in enumerate(ctrl_ids)}
   for actuator in actuators:
-    base_actuator = (
-      actuator.base_actuator if isinstance(actuator, DelayedActuator) else actuator
-    )
+    base_actuator = actuator  # DelayedActuator wrapper removed in mjlab >= 1.3
     if not isinstance(base_actuator, IdealPdActuator):
       continue
 
@@ -641,3 +638,39 @@ def apply_random_cube_wrench(
     body_ids=local_ids.tolist(),
     env_ids=env_ids,
   )
+
+
+def sync_actuator_delays(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | None,
+  lag_range: tuple[int, int],
+  asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", actuator_names=(".*",)),
+) -> None:
+  """Sample one command-delay lag per environment and apply it to all actuators.
+
+  Port of ``mjlab.envs.mdp.sync_actuator_delays`` (removed together with
+  ``DelayedActuator`` in mjlab 1.3). Delay is now configured inline on each
+  actuator cfg; actuators that share a delay config are fused and share one
+  ``DelayBuffer``, so setting the lag through any of them is idempotent.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  if env_ids is None:
+    env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+  else:
+    env_ids = env_ids.to(env.device, dtype=torch.long)
+
+  if isinstance(asset_cfg.actuator_ids, list):
+    actuators = [asset.actuators[i] for i in asset_cfg.actuator_ids]
+  elif isinstance(asset_cfg.actuator_ids, slice):
+    actuators = list(asset.actuators[asset_cfg.actuator_ids])
+  else:
+    actuators = [asset.actuators[asset_cfg.actuator_ids]]
+  delayed = [a for a in actuators if a.has_delay]
+  if not delayed:
+    return
+
+  lags = torch.randint(
+    lag_range[0], lag_range[1] + 1, (len(env_ids),), device=env.device, dtype=torch.long
+  )
+  for actuator in delayed:
+    actuator.set_lags(lags, env_ids)

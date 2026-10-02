@@ -5,7 +5,7 @@ from typing import Any, Protocol
 import mujoco
 import torch
 
-from mjlab.actuator import DelayedActuatorCfg, IdealPdActuatorCfg
+from mjlab.actuator import IdealPdActuatorCfg
 from mjlab.envs.mdp.actions import (
   JointEffortActionCfg,
   JointPositionActionCfg,
@@ -184,8 +184,9 @@ class _BaseJointActionTerm:
     effort_limit = torch.full((1, self._action_dim), float("nan"), device=self.device)
 
     def _unwrap_cfg(cfg: Any) -> Any:
-      # DelayedActuatorCfg wraps the underlying actuator in base_cfg.
-      while isinstance(cfg, DelayedActuatorCfg):
+      # Older mjlab wrapped actuators in DelayedActuatorCfg(base_cfg=...); since
+      # mjlab 1.3 delay is inline on the actuator cfg, so unwrap only if present.
+      while hasattr(cfg, "base_cfg"):
         cfg = cfg.base_cfg
       return cfg
 

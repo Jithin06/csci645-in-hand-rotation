@@ -16,9 +16,9 @@ from math import pi
 import mujoco
 
 from in_hand_rotation_mjlab import MYMJLAB_SRC_PATH
-from mjlab.actuator import DelayedActuatorCfg, IdealPdActuatorCfg
+from mjlab.actuator import IdealPdActuatorCfg
 from mjlab.entity import EntityCfg, EntityArticulationInfoCfg
-from mjlab.utils.os import update_assets
+from in_hand_rotation_mjlab.robots.leap_hand._assets import update_assets
 from mjlab.utils.spec_config import CollisionCfg
 
 
@@ -280,8 +280,10 @@ def _scaled(value: float, scale_map: dict[str, float], joint_name: str) -> float
     return value * scale_map.get(joint_name, 1.0)
 
 
-def _make_joint_actuator_cfg(joint_name: str) -> DelayedActuatorCfg:
-    base_cfg = IdealPdActuatorCfg(
+def _make_joint_actuator_cfg(joint_name: str) -> IdealPdActuatorCfg:
+    # mjlab >= 1.3: command delay is configured inline on the actuator cfg
+    # (DelayedActuatorCfg was removed; delay always applies to the command target).
+    return IdealPdActuatorCfg(
         target_names_expr=(joint_name,),
         stiffness=_scaled(
             _base_stiffness_for_joint(joint_name),
@@ -308,10 +310,6 @@ def _make_joint_actuator_cfg(joint_name: str) -> DelayedActuatorCfg:
             LEAP_FRICTION_SCALE_BY_JOINT,
             joint_name,
         ),
-    )
-    return DelayedActuatorCfg(
-        base_cfg=base_cfg,
-        delay_target="position",
         delay_min_lag=LEAP_ACTION_DELAY_MIN_LAG,
         delay_max_lag=LEAP_ACTION_DELAY_MAX_LAG,
         delay_hold_prob=LEAP_ACTION_DELAY_HOLD_PROB,

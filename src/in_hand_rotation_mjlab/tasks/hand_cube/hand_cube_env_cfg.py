@@ -11,7 +11,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
-from mjlab.terrains import TerrainImporterCfg
+from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 from in_hand_rotation_mjlab.tasks.hand_cube import mdp as hand_cube_mdp
@@ -362,7 +362,7 @@ def make_hand_cube_inhand_rotate_env_cfg() -> ManagerBasedRlEnvCfg:
 
   return ManagerBasedRlEnvCfg(
     scene=SceneCfg(
-      terrain=TerrainImporterCfg(terrain_type="plane"),
+      terrain=TerrainEntityCfg(terrain_type="plane"),
       entities={},
       num_envs=1,
       env_spacing=0.6,
@@ -533,11 +533,9 @@ def make_hand_cube_embodiment_env_cfg(
     
     # Domain randomization events (shared across all embodiments)
     cfg.events["dr_cube_com"] = EventTermCfg(
-        func=envs_mdp.randomize_field,
+        func=envs_mdp.dr.body_com_offset,
         mode="reset",
-        domain_randomization=True,
         params={
-            "field": "body_ipos",
             "ranges": {0: (-0.002, 0.002), 1: (-0.002, 0.002), 2: (-0.002, 0.002)},
             "distribution": "uniform",
             "operation": "add",
@@ -575,11 +573,9 @@ def make_hand_cube_embodiment_env_cfg(
         },
     )
     cfg.events["dr_motor_friction"] = EventTermCfg(
-        func=envs_mdp.randomize_field,
+        func=envs_mdp.dr.joint_friction,
         mode="reset",
-        domain_randomization=True,
         params={
-            "field": "dof_frictionloss",
             "ranges": (0.5, 1.8),
             "distribution": "uniform",
             "operation": "scale",
@@ -587,11 +583,9 @@ def make_hand_cube_embodiment_env_cfg(
         },
     )
     cfg.events["dr_motor_damping"] = EventTermCfg(
-        func=envs_mdp.randomize_field,
+        func=envs_mdp.dr.joint_damping,
         mode="reset",
-        domain_randomization=True,
         params={
-            "field": "dof_damping",
             "ranges": (0.6, 1.6),
             "distribution": "uniform",
             "operation": "scale",
@@ -599,11 +593,9 @@ def make_hand_cube_embodiment_env_cfg(
         },
     )
     cfg.events["dr_reflected_inertia"] = EventTermCfg(
-        func=envs_mdp.randomize_field,
+        func=envs_mdp.dr.joint_armature,
         mode="startup",
-        domain_randomization=True,
         params={
-            "field": "dof_armature",
             "ranges": (0.7 * LEAP_REFLECTED_ARMATURE, 1.3 * LEAP_REFLECTED_ARMATURE),
             "distribution": "uniform",
             "operation": "abs",
@@ -611,7 +603,7 @@ def make_hand_cube_embodiment_env_cfg(
         },
     )
     cfg.events["dr_robot_pd_gains"] = EventTermCfg(
-        func=envs_mdp.randomize_pd_gains,
+        func=envs_mdp.dr.pd_gains,
         mode="startup",
         params={
             "kp_range": (0.9, 1.1),
@@ -622,7 +614,7 @@ def make_hand_cube_embodiment_env_cfg(
         },
     )
     cfg.events["dr_action_delay"] = EventTermCfg(
-        func=envs_mdp.sync_actuator_delays,
+        func=hand_cube_mdp.sync_actuator_delays,
         mode="reset",
         params={
             "lag_range": (

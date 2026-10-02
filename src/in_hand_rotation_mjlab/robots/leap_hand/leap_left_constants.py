@@ -13,7 +13,7 @@ import mujoco
 
 from in_hand_rotation_mjlab import MYMJLAB_SRC_PATH
 from mjlab.entity import EntityCfg
-from mjlab.utils.os import update_assets
+from in_hand_rotation_mjlab.robots.leap_hand._assets import update_assets
 
 from in_hand_rotation_mjlab.robots.leap_hand.leap_right_constants import (
     configure_leap_spec_for_ideal_pd,

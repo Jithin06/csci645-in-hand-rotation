@@ -48,6 +48,12 @@ def _prepare_agent_cfg(agent_cfg) -> dict:
     if isinstance(model_cfg, dict):
       if model_cfg.get("class_name", "MLPModel") != "CNNModel":
         model_cfg.pop("cnn_cfg", None)
+      # rsl-rl 5 (mjlab >= 1.3): drop None-valued optional model fields.
+      if model_cfg.get("distribution_cfg") is None:
+        model_cfg.pop("distribution_cfg", None)
+      if model_cfg.get("rnn_type") is None:
+        for opt in ("rnn_type", "rnn_hidden_dim", "rnn_num_layers"):
+          model_cfg.pop(opt, None)
   return cfg_dict
 
 
